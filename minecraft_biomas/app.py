@@ -12,6 +12,7 @@ import torch
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from core import Config, train, predict, load_checkpoint, image_files, Cancelled
 from plots import curves, confusion
+from weights_view import dense_weight_layers, draw_dense_connections
 from architectures import ORIGINAL, PRESETS, validate_architecture
 
 BASE = Path(__file__).resolve().parent
@@ -310,9 +311,29 @@ class App(tk.Tk):
             anchor="w", pady=8
         )
         self.net_text = ScrolledText(
-            self.net_tab, font=("Consolas", 11), wrap="none", state="disabled"
+            self.net_tab, font=("Consolas", 11), wrap="none", state="disabled",
+            height=11,
         )
-        self.net_text.pack(fill="both", expand=True)
+        self.net_text.pack(fill="x")
+        weight_bar = ttk.Frame(self.net_tab)
+        weight_bar.pack(fill="x", pady=(12, 4))
+        ttk.Label(weight_bar, text="Conexiones aprendidas (capas densas):").pack(
+            side="left", padx=(0, 8)
+        )
+        self.weight_layer = tk.StringVar()
+        self.weight_selector = ttk.Combobox(
+            weight_bar, textvariable=self.weight_layer, state="disabled", width=36,
+        )
+        self.weight_selector.pack(side="left")
+        self.weight_selector.bind("<<ComboboxSelected>>", self.show_weights)
+        self.weight_info = tk.StringVar(
+            value="Entrena o carga un modelo para visualizar sus conexiones."
+        )
+        ttk.Label(
+            self.net_tab, textvariable=self.weight_info, wraplength=1050,
+        ).pack(anchor="w", pady=(0, 4))
+        self.weight_plot = ttk.Frame(self.net_tab)
+        self.weight_plot.pack(fill="both", expand=True)
         self.values["image_size"].trace_add(
             "write", lambda *_: self.refresh_architecture()
         )
@@ -350,6 +371,43 @@ class App(tk.Tk):
         self.net_text.delete("1.0", "end")
         self.net_text.insert("1.0", text)
         self.net_text.configure(state="disabled")
+
+    def refresh_weights(self):
+        """Actualiza las capas disponibles cuando cambia el modelo activo."""
+        if not self.active:
+            self.weight_selector.configure(values=(), state="disabled")
+            self.weight_layer.set("")
+            return
+        cp = self.active["checkpoint"]
+        layers = dense_weight_layers(cp["state_dict"])
+        labels = [name for name, _, _ in layers]
+        previous = self.weight_layer.get()
+        self.weight_selector.configure(
+            values=labels, state="readonly" if labels else "disabled"
+        )
+        if not labels:
+            self.weight_layer.set("")
+            self.weight_info.set("El modelo no contiene capas densas (Linear).")
+            return
+        self.weight_layer.set(previous if previous in labels else labels[-1])
+        self.show_weights()
+
+    def show_weights(self, event=None):
+        if not self.active or not self.weight_layer.get():
+            return
+        cp = self.active["checkpoint"]
+        key = self.weight_layer.get()
+        try:
+            fig = draw_dense_connections(cp["state_dict"][key], key)
+            self.render(self.weight_plot, fig)
+            self.weight_info.set(
+                "Azul: pesos positivos; naranja: negativos. Se muestran "
+                "hasta 12 unidades por lado y las 60 conexiones de mayor "
+                "magnitud entre ellas. No representa las activaciones ni "
+                "demuestra la importancia de una neurona."
+            )
+        except (KeyError, ValueError, RuntimeError) as exc:
+            self.weight_info.set("No se pudieron mostrar los pesos: " + str(exc))
 
     def use_preset(self):
         self.arch_editor.delete("1.0", "end")
@@ -751,6 +809,7 @@ class App(tk.Tk):
                 ),
             )
         self.refresh_architecture()
+        self.refresh_weights()
         self.pred_title.set(
             f"Modelo activo: {len(cp['classes'])} biomas · {cp['image_size']} × {cp['image_size']}"
         )
