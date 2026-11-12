@@ -53,9 +53,8 @@ class Config:
 
     def validate(self):
         if not 1 <= self.epochs <= 10000:
-            # Hidden-Revolver: Por si te entra curiosidad para implementarlo, se puede realizar un calculo automático de los hiperparámetros con algoritmos genéticos y evolutivos, para no tener que configurarlo a mano.
-            raise ValueError("Épocas: 1–10000.") # Hidden-Revolver: Muchísimas generaciones en el caso máximo, ten cuidado con los hiperparámetros por si estás sobre-entrenando el modelo, se puede ver en la gráfica de la perdida y precisión con respecto a las generaciones (Si la pendiente es muy inclinada después de un estancamiento inicial y su precisión es casi 100% pocas generaciones después de tener muchos fallos, el modelo está sobre-entrenando, o tienes pocos datos de entrenamiento, o estas filtrando datos de validación en el entrenamiento). No te preocupes, está bien controlar casos gigantescos.
-        if not 1 <= self.batch_size <= 4096: # Hidden-Revolver: Igual con esto creo, no sé tampoco si el modelo está sobre-capacitado para la tarea que se le está siendo asignada. Si tienes alguna forma de mostrar la evolución de los pesos de los nodos(neuronas) de la red neuronal por capas, puedes identificar si la gran mayoría de las neuronas no tiene valor ninguno, o si su aportación a los resultados es despreciable. Igual, no te preocupes, está bien controlar casos gigantescos.
+            raise ValueError("Épocas: 1–10000.")
+        if not 1 <= self.batch_size <= 4096:
             raise ValueError("Batch: 1–4096.")
         if self.image_size not in (32, 64, 96, 128):
             raise ValueError("Tamaño: 32, 64, 96 o 128.")
@@ -250,7 +249,7 @@ def make_scheduler(optimizer, cfg):
     return None
 
 
-def split_samples(samples, cfg): # Hidden-Revolver: Aquí se comprueba bien que los datos de validación y los de entrenamiento están separado. Comprueba que no haya imágenes demasiado similares, o iguales(datos duplicados), entre ellas. Puedes obtener más datos de entrenamiento si creas imágenes a partir de fragmentos de otras imágenes. Pero creo que afectaría demasiado a la precisión del modelo porque serían mucho mayores que los datos más realistas.
+def split_samples(samples, cfg):
     labels = np.array([s[1] for s in samples])
     indices = np.arange(len(samples))
     try:
@@ -315,7 +314,7 @@ def evaluate(model, loader, device, cancel):
 def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None):
     cancel = cancel or threading.Event()
     cfg.validate()
-    log = lambda s: emit("log", s) # Hidden-Revolver: Interesante uso de una función anónima, pero ten cuidado con ellas
+    log = lambda s: emit("log", s)
     names, samples = collect(entries, cancel, log)
     available = Counter(s[1] for s in samples)
     samples = cap_samples(samples, cfg.max_images_per_class, cfg.seed)
