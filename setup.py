@@ -113,7 +113,11 @@ def detect_nvidia() -> tuple[bool, tuple[int, int] | None]:
         if proc.returncode != 0:
             continue
         # Ejemplo: "CUDA Version: 12.8"; esa versión indica soporte del driver.
-        match = re.search(r"CUDA Version\s*:\s*(\d+)\.(\d+)", proc.stdout, re.I)
+        match = re.search(
+            r"\bCUDA(?:\s+UMD)?\s+Version\s*:\s*(\d+)\.(\d+)",
+            proc.stdout,
+            re.I,
+        )
         version = (int(match.group(1)), int(match.group(2))) if match else None
         return True, version
     return False, None
