@@ -74,13 +74,19 @@ def check_prerequisites() -> None:
     try:
         import tkinter  # noqa: F401; Tk no se instala mediante pip.
     except ImportError as exc:
-        package_hint = (
-            "En Fedora: sudo dnf install python3-tkinter. "
-            "En Ubuntu/Debian: sudo apt install python3-tk."
-            if sys.platform.startswith("linux")
-            else "Reinstala Python desde python.org incluyendo Tcl/Tk y IDLE."
-        )
-        raise SetupError("Falta Tkinter. " + package_hint) from exc
+        if sys.platform.startswith("linux"):
+            package_hint = (
+                "Instala Tkinter con el gestor de paquetes de tu distribución:\n"
+                "  Fedora: sudo dnf install python3-tkinter\n"
+                "  Ubuntu/Debian: sudo apt install python3-tk\n"
+                "  Arch Linux: sudo pacman -S tk tcl"
+            )
+        else:
+            package_hint = (
+                "Reinstala Python desde python.org y activa las opciones "
+                "Tcl/Tk e IDLE del instalador."
+            )
+        raise SetupError("Falta Tkinter.\n" + package_hint) from exc
 
 
 def detect_nvidia() -> tuple[bool, tuple[int, int] | None]:
@@ -182,7 +188,6 @@ def environment_is_healthy(python: Path, cuda: bool) -> bool:
     say("[Verificación] Dependencias ausentes/incompatibles: " +
         (result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "verificación fallida"))
     return False
-
 
 
 def check_environment_tk(python: Path) -> None:

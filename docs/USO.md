@@ -41,6 +41,15 @@ Cada entrenamiento completado crea una carpeta única en `OutPut`, en la raíz d
 
 También se admite tu `biomas_cnn.pth` de la versión anterior: permite predecir con sus etiquetas originales, pero ese archivo no contiene curvas ni resultados del test. No es posible recuperar métricas ausentes a partir de los pesos. Carga solamente modelos de procedencia conocida; se usa `weights_only=True`.
 
+### Visualización de pesos entre neuronas
+
+En la pestaña **Red neuronal**, después de entrenar o cargar un checkpoint `.pth`, aparece un selector de capas densas (`Linear`). La vista dibuja las conexiones aprendidas de la capa seleccionada:
+
+- **Azul**: peso positivo; **naranja**: peso negativo. El grosor y la opacidad corresponden a la magnitud absoluta del peso respecto a los mostrados.
+- Para evitar una gráfica ilegible en capas grandes, se seleccionan como máximo **12 entradas y 12 salidas** según su peso absoluto máximo y se representan hasta **60 conexiones** entre ellas. El gráfico indica los índices de neuronas originales (`E` y `S`) y el número real de unidades de la capa.
+- La vista **no modifica el modelo** ni necesita las imágenes originales: lee los tensores de `state_dict` del checkpoint. No se muestran aquí filtros convolucionales (`Conv2d`) ni la evolución histórica de pesos entre épocas.
+- **Importante:** el valor o signo de un peso individual no demuestra por sí mismo la importancia causal de una neurona, ni equivale a su activación.
+
 ## 4. Imagen propia
 
 Entrena o carga un modelo, abre **Probar imagen** y pulsa **Seleccionar imagen…**. Se presenta la captura, el bioma más probable y el porcentaje de **cada** clase, ordenados de mayor a menor. La distribución Softmax suma 100 % antes de redondear. Se reutilizan la resolución y normalización del modelo, aunque los controles de entrenamiento hayan cambiado.
