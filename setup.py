@@ -86,7 +86,7 @@ def check_prerequisites() -> None:
                 "Reinstala Python desde python.org y activa las opciones "
                 "Tcl/Tk e IDLE del instalador."
             )
-        raise SetupError("Falta Tkinter. " + package_hint) from exc
+        raise SetupError("Falta Tkinter.\n" + package_hint) from exc
 
 
 def detect_nvidia() -> tuple[bool, tuple[int, int] | None]:
