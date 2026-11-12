@@ -1,7 +1,12 @@
 """Pruebas de visualización de pesos sin iniciar Tkinter ni usar GPU."""
 
+import sys
+from pathlib import Path
+
 import pytest
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "minecraft_biomas"))
 
 from weights_view import dense_weight_layers, draw_dense_connections
 
