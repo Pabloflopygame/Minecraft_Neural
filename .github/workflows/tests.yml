@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   dataset:
+    if: github.event_name != 'schedule'
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -25,6 +26,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_setup.py -v
 
   cpu:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,9 +38,9 @@ jobs:
       - name: Unit and regression tests with coverage
         run: |
           python -m pytest tests -q -m "not performance" \
-            --cov=minecraft_biomas --cov=scripts --cov=setup \
+            --cov=minecraft_biomas --cov=scripts \
             --cov-report=term-missing --cov-report=xml:coverage.xml \
-            --cov-fail-under=30
+            --cov-fail-under=50
       - name: CPU performance budgets
         run: python -m pytest tests/test_performance.py -q -m performance
       - name: Save coverage report
@@ -50,6 +52,7 @@ jobs:
           if-no-files-found: ignore
 
   quality:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +74,18 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install -r minecraft_biomas/requirements.txt -r requirements-dev.txt
+      - run: python -m pip install --upgrade 'setuptools>=84.1.0'
       - run: python -m pip install pip-audit
       - name: Audit installed Python dependencies including PyTorch
         run: python -m pip_audit --local
+      - name: Audit upstream PyPI releases for PyTorch CPU wheels
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          from pathlib import Path
+          packages = ('torch', 'torchvision')
+          pins = [f'{name}=={version(name).split("+")[0]}' for name in packages]
+          Path('torch-upstream-audit.txt').write_text('\n'.join(pins) + '\n', encoding='utf-8')
+          print('Checking canonical versions:', ', '.join(pins))
+          PY
+          python -m pip_audit --requirement torch-upstream-audit.txt --no-deps
