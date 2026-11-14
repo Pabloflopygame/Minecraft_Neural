@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,21 @@ spec.loader.exec_module(setup)
 
 
 class SetupTests(unittest.TestCase):
+    def test_select_torch_index_uses_supported_cuda_builds(self):
+        cases = [((13, 4), "cu130"), ((13, 0), "cu130"), ((12, 8), "cu126"), ((12, 6), "cu126")]
+        for version, expected in cases:
+            with self.subTest(driver=version), patch.object(setup, "detect_nvidia", return_value=(True, version)):
+                index, enabled = setup.select_torch_index("auto")
+                self.assertTrue(enabled)
+                self.assertEqual(index, f"https://download.pytorch.org/whl/{expected}")
+
+    def test_torch_and_torchvision_pins_are_in_install_command(self):
+        with patch.object(setup, "call") as invoke:
+            setup.install(Path("python"), "https://download.pytorch.org/whl/cpu")
+        command = invoke.call_args_list[1].args
+        self.assertIn("torch==2.13.0", command)
+        self.assertIn("torchvision==0.28.0", command)
+
     def test_broken_tk_reports_system_dependency(self):
         from types import SimpleNamespace
         with patch.object(setup.subprocess, 'run',

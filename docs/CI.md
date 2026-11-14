@@ -23,6 +23,11 @@ requirements-dev.txt. From the repository root:
     python -m pip install pip-audit
     python -m pip_audit --local
 
+PyTorch versions in CI and the local installer are pinned to torch 2.13.0 and
+its matching torchvision 0.28.0. The installer uses cu130 for CUDA drivers >=13.0,
+cu126 for drivers 12.6 through 12.x, and CPU wheels on systems without NVIDIA.
+The CUDA path still requires testing on a compatible NVIDIA GPU; CI only runs CPU.
+
 ## Interpretation
 
 - The initial project-wide coverage minimum is 50%; raise it as more code

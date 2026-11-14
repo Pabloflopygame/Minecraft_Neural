@@ -33,6 +33,8 @@ APP = PROJECT / "app.py"
 REQUIREMENTS = PROJECT / "requirements.txt"
 ENV_DIR = ROOT / ".venv"
 STATE_FILE = ENV_DIR / ".minecraft_setup.json"
+TORCH_VERSION = "2.13.0"
+TORCHVISION_VERSION = "0.28.0"
 
 
 class SetupError(Exception):
@@ -141,8 +143,8 @@ def select_torch_index(device: str) -> tuple[str, bool]:
             "NVIDIA detectada, pero no se pudo leer el soporte CUDA de nvidia-smi. "
             "Actualiza los controladores o utiliza --cpu."
         )
-    if max_cuda >= (12, 8):
-        index = "cu128"
+    if max_cuda >= (13, 0):
+        index = "cu130"
     elif max_cuda >= (12, 6):
         index = "cu126"
     else:
@@ -161,7 +163,7 @@ def setup_signature(index: str) -> str:
     digest.update(REQUIREMENTS.read_bytes())
     digest.update(index.encode("utf-8"))
     digest.update(f"{sys.version_info.major}.{sys.version_info.minor}".encode("ascii"))
-    digest.update(b"bootstrap-v1")
+    digest.update(f"torch={TORCH_VERSION};torchvision={TORCHVISION_VERSION};bootstrap-v2".encode("ascii"))
     return digest.hexdigest()
 
 
@@ -170,6 +172,10 @@ def environment_is_healthy(python: Path, cuda: bool) -> bool:
         return False
     checks = (
         "import tkinter, numpy, PIL, matplotlib, sklearn, torch, torchvision\n"
+        "assert torch.__version__.split('+')[0] == " + repr(TORCH_VERSION) + ", "
+        "'Versión de PyTorch inesperada'\n"
+        "assert torchvision.__version__.split('+')[0] == " + repr(TORCHVISION_VERSION) + ", "
+        "'Versión de torchvision inesperada'\n"
         "from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg\n"
         "assert not " + repr(cuda) + " or torch.cuda.is_available(), "
         "'PyTorch no puede utilizar CUDA'\n"
@@ -212,10 +218,10 @@ def install(python: Path, index: str) -> None:
     call(str(python), "-m", "pip", "install", "--upgrade", "pip")
     if index == "pypi":
         call(str(python), "-m", "pip", "install", "--force-reinstall",
-             "torch==2.10.0", "torchvision==0.25.0")
+             f"torch=={TORCH_VERSION}", f"torchvision=={TORCHVISION_VERSION}")
     else:
         call(str(python), "-m", "pip", "install", "--force-reinstall", "--index-url", index,
-             "torch==2.10.0", "torchvision==0.25.0")
+             f"torch=={TORCH_VERSION}", f"torchvision=={TORCHVISION_VERSION}")
     call(str(python), "-m", "pip", "install", "-r", str(REQUIREMENTS))
 
 
