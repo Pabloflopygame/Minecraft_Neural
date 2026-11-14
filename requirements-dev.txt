@@ -1,2 +1,4 @@
-# Instalar después de setup.py; incluye las pruebas unitarias y de pytest.
+# Instalar despues de setup.py; herramientas para desarrollar y ejecutar CI.
 pytest>=8,<10
+pytest-cov>=6,<8
+ruff>=0.8,<1
