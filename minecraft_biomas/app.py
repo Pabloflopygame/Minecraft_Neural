@@ -10,7 +10,8 @@ from tkinter.scrolledtext import ScrolledText
 from PIL import Image, ImageTk, ImageOps
 import torch
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from core import Config, train, predict, load_checkpoint, image_files, Cancelled
+from core import Config, train, predict, image_files, Cancelled
+from restore import load_workspace, restore_rows, save_copy
 from sweep import OPTIONS, error_rates
 from sweep_view import SweepView
 from plots import curves, confusion
@@ -128,6 +129,7 @@ class App(tk.Tk):
         )
         cfg.pack(fill="x", pady=10)
         self.values = {}
+        self.initial_values = {}
         fields = [
             ("epochs", "Épocas", "30"),
             ("batch_size", "Batch", "64"),
@@ -150,6 +152,7 @@ class App(tk.Tk):
             col = i % 7
             v = tk.StringVar(value=value)
             self.values[key] = v
+            self.initial_values[key] = value
             ttk.Label(cfg, text=label).grid(row=row, column=col, padx=4, sticky="w")
             if key in options:
                 w = ttk.Combobox(
@@ -170,6 +173,19 @@ class App(tk.Tk):
             cfg,
             text="Pesos balanced: compensa clases pequeñas. LR plateau: reduce al estancarse; cosine: descenso suave; none: constante.",
         ).grid(row=5, column=0, columnspan=7, sticky="w")
+        sourcebar = ttk.Frame(self.data_tab)
+        sourcebar.pack(fill="x")
+        self.button(sourcebar, "Cargar versión…", self.load_model)
+        self.button(sourcebar, "Vincular dataset…", self.link_dataset)
+        self.reuse = tk.BooleanVar(value=False)
+        self.source_label = tk.StringVar(value="Reutilizar pesos del modelo activo")
+        self.source_check = ttk.Checkbutton(
+            sourcebar,
+            textvariable=self.source_label,
+            variable=self.reuse,
+            state="disabled",
+        )
+        self.source_check.pack(side="left", padx=4)
         runbar = ttk.Frame(self.data_tab)
         runbar.pack(fill="x")
         self.train_button = self.button(runbar, "Train · Entrenar", self.start_train)
@@ -188,6 +204,7 @@ class App(tk.Tk):
         bar = ttk.Frame(self.results_tab)
         bar.pack(fill="x")
         self.button(bar, "Cargar modelo / resultados...", self.load_model)
+        self.button(bar, "Guardar copia como…", self.save_model_copy)
         self.button(bar, "Exportar gráficas...", self.export_plots)
         self.summary = tk.StringVar(value="Todavía no hay un entrenamiento cargado.")
         ttk.Label(self.results_tab, textvariable=self.summary, wraplength=1050).pack(
@@ -488,6 +505,7 @@ class App(tk.Tk):
         self.cancel.clear()
         for control, _ in self.controls:
             control.configure(state="disabled")
+        self.source_check.configure(state="disabled")
         self.stop.configure(state="normal")
         self.status.set("Trabajando...")
 
@@ -512,6 +530,9 @@ class App(tk.Tk):
                     for control, state in self.controls:
                         control.configure(state=state)
                     self.stop.configure(state="disabled")
+                    self.source_check.configure(
+                        state="normal" if self.active else "disabled"
+                    )
                     self.refresh_selection()
                 elif kind == "log":
                     self.append_log(value)
@@ -548,11 +569,31 @@ class App(tk.Tk):
                     self.status.set(
                         "Carpetas añadidas. Marca los biomas que quieras entrenar."
                     )
+                elif kind == "saved_copy":
+                    self.status.set("Copia guardada en " + value)
+                elif kind == "linked":
+                    self.replace_rows(value)
+                    self.status.set(
+                        "Carpetas vinculadas."
+                        if all(r["count"] for r in value)
+                        else "Faltan imágenes en las carpetas con recuento 0."
+                    )
                 elif kind in ("trained", "loaded"):
                     self.active = value
+                    notes = self.restore_training(value) if kind == "loaded" else []
+                    self.source_label.set(
+                        "Reutilizar pesos de "
+                        + Path(value["path"]).parent.name
+                        + "/"
+                        + Path(value["path"]).name
+                    )
                     self.show_model()
-                    self.status.set("Modelo listo: " + value["path"])
-                    self.tabs.select(self.results_tab)
+                    self.status.set(" ".join(notes) or "Modelo listo: " + value["path"])
+                    for note in notes:
+                        self.append_log(note)
+                    self.tabs.select(
+                        self.data_tab if kind == "loaded" else self.results_tab
+                    )
                 elif kind == "swept":
                     self.sweep.load(value)
                 elif kind == "prediction":
@@ -727,6 +768,10 @@ class App(tk.Tk):
         entries = self.entries()
         if not 5 <= len(entries) <= 10:
             raise ValueError("Marca entre 5 y 10 biomas.")
+        if any(not e["folder"] or not Path(e["folder"]).is_dir() for e in entries):
+            raise ValueError(
+                "Faltan carpetas de biomas. Vincula la raíz de tu dataset."
+            )
         if validate:
             cfg.validate()
             validate_architecture(spec, cfg.image_size, len(entries))
@@ -739,22 +784,107 @@ class App(tk.Tk):
             return messagebox.showerror("Configuración", str(exc))
         self.history = []
         self.progress["value"] = 0
+        parent = self.training_parent()
         self.append_log(
-            "Nuevo entrenamiento desde cero. El test no se consulta hasta terminar."
+            "Entrenando una nueva copia desde los pesos activos."
+            if parent
+            else "Nuevo entrenamiento desde cero."
         )
         self.launch(
             lambda: train(
-                entries, cfg, OUTPUT, lambda k, v: self.events.put((k, v)), self.cancel
+                entries,
+                cfg,
+                OUTPUT,
+                lambda k, v: self.events.put((k, v)),
+                self.cancel,
+                parent=parent,
             ),
             "trained",
         )
+
+    def training_parent(self):
+        return self.active if self.reuse.get() else None
+
+    def replace_rows(self, rows):
+        self.tree.delete(*self.tree.get_children())
+        for row in rows:
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    "Sí" if row.get("use", True) else "No",
+                    row["name"],
+                    row["count"],
+                    row["folder"],
+                ),
+            )
+
+    def link_dataset(self):
+        entries = self.entries(all_rows=True)
+        if not entries:
+            return self.add_root()
+        root = filedialog.askdirectory(
+            title="Raíz que contiene las carpetas de estos biomas"
+        )
+        if root:
+
+            def work():
+                rows = restore_rows(
+                    [e["name"] for e in entries], entries, Path(root), prefer_root=True
+                )
+                for row, entry in zip(rows, entries):
+                    row["use"] = entry["use"]
+                return rows
+
+            self.launch(work, "linked")
+
+    def restore_training(self, workspace):
+        cp = workspace["checkpoint"]
+        config = {
+            **self.initial_values,
+            **workspace["config"],
+            "image_size": cp["image_size"],
+        }
+        notes = list(workspace["notes"])
+        if config["device"] == "cuda" and not torch.cuda.is_available():
+            config["device"] = "cpu"
+            notes.append(
+                "CUDA no está disponible en este equipo. Se ha seleccionado CPU."
+            )
+        for key, var in self.values.items():
+            var.set(str(config[key]))
+        self.arch_editor.configure(state="normal")
+        self.arch_editor.delete("1.0", "end")
+        self.arch_editor.insert(
+            "1.0",
+            json.dumps(
+                cp.get("architecture") or ORIGINAL, indent=2, ensure_ascii=False
+            ),
+        )
+        self.replace_rows(workspace["rows"])
+        self.reuse.set(True)
+        return notes
 
     def load_model(self):
         path = filedialog.askopenfilename(filetypes=[("Modelo PyTorch", "*.pth *.pt")])
         if path:
             self.launch(
-                lambda: {"checkpoint": load_checkpoint(path), "path": path}, "loaded"
+                lambda: load_workspace(path, BASE / "minecraft_biomas"), "loaded"
             )
+
+    def save_model_copy(self):
+        workspace = self.active
+        if not workspace:
+            return messagebox.showinfo(
+                "Guardar copia", "Entrena o carga un modelo primero."
+            )
+        destination = filedialog.asksaveasfilename(
+            title="Guardar la versión activa con un nombre nuevo",
+            defaultextension=".pth",
+            filetypes=[("Modelo PyTorch", "*.pth")],
+        )
+        if destination:
+            self.launch(lambda: save_copy(workspace, destination), "saved_copy")
 
     def show_model(self):
         cp = self.active["checkpoint"]

@@ -122,6 +122,20 @@ En la ventana **Biomas de Minecraft** tienes dos formas de comprobarlo:
   ver resultados y probar imágenes sin volver a entrenar; **requiere haber
   descargado esos modelos con Git LFS**.
 
+Para iterar sobre una versión, pulsa **Cargar versión…** en **Datos y entrenamiento**.
+Se recuperan los parámetros guardados, la arquitectura y las carpetas de los biomas
+en el orden de las salidas. Si moviste las imágenes, **Vincular dataset…** permite
+seleccionar su nueva raíz. En versiones anteriores conserva `resultados.json`
+junto al modelo para recuperar las rutas originales.
+
+Con **Reutilizar pesos** activado, **Entrenar** parte de los pesos de la versión activa.
+Las épocas indican cuántas épocas adicionales entrenar. El optimizador y su plan de
+learning rate comienzan con los ajustes visibles. Cada iteración se guarda en una
+carpeta nueva de `OutPut/`. En **Resultados → Guardar copia como…** puedes conservar
+la versión activa con un nombre propio. En un barrido, todas las combinaciones parten de la
+misma versión. Para comparar sobre la misma partición, conserva las imágenes, la
+semilla, el límite por bioma y el porcentaje de validación.
+
 En **Probar imagen** puedes seleccionar una captura de Minecraft para obtener
 la predicción y los porcentajes de las clases del modelo cargado.
 Para el resto de opciones consulta el [Manual de uso](docs/USO.md).

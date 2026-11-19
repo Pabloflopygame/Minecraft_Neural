@@ -99,7 +99,7 @@ def append_rows(path, rows):
         writer.writerows(rows)
 
 
-def run_sweep(entries, base, axes, output, emit, cancel):
+def run_sweep(entries, base, axes, output, emit, cancel, *, parent=None):
     from core import check_cancel, collect, train
     from architectures import validate_architecture
 
@@ -119,7 +119,9 @@ def run_sweep(entries, base, axes, output, emit, cancel):
         try:
             cfg.validate()
             validate_architecture(cfg.architecture, cfg.image_size, len(entries))
-            result = train(entries, cfg, folder, emit, cancel, collected=collected)
+            result = train(
+                entries, cfg, folder, emit, cancel, collected=collected, parent=parent
+            )
         except ValueError as exc:
             raise ValueError(
                 f"{label}: {exc}. Resultados completados: {folder}"

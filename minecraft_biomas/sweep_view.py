@@ -134,6 +134,7 @@ class SweepView:
                 axes[key] = axis_values(key, *(f.get() for f in fields))
         except Exception as exc:
             return messagebox.showerror("Configuración del barrido", str(exc))
+        parent = self.app.training_parent()
         self.app.history = []
         self.app.tabs.select(self.app.data_tab)
         self.app.launch(
@@ -144,6 +145,7 @@ class SweepView:
                 self.output,
                 lambda k, v: self.app.events.put((k, v)),
                 self.app.cancel,
+                parent=parent,
             ),
             "swept",
         )
