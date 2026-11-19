@@ -311,11 +311,21 @@ def evaluate(model, loader, device, cancel):
     )
 
 
-def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None):
+def train(
+    entries,
+    cfg,
+    output_root,
+    emit=lambda kind, value: None,
+    cancel=None,
+    *,
+    collected=None,
+):
     cancel = cancel or threading.Event()
     cfg.validate()
     log = lambda s: emit("log", s)
-    names, samples = collect(entries, cancel, log)
+    names, samples = (
+        collected if collected is not None else collect(entries, cancel, log)
+    )
     available = Counter(s[1] for s in samples)
     samples = cap_samples(samples, cfg.max_images_per_class, cfg.seed)
     selected = Counter(s[1] for s in samples)
@@ -491,6 +501,17 @@ def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None)
             for i in indices:
                 path, label, digest = samples[i]
                 writer.writerow([path, names[label], digest, kind])
+    with (run / "predicciones_test.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["ruta", "real", "predicho", "correcto"])
+        for index, actual, guess in zip(parts["test"], truth, predicted):
+            writer.writerow(
+                [samples[index][0], names[actual], names[guess], int(actual == guess)]
+            )
+    with (run / "epocas.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(history[0]))
+        writer.writeheader()
+        writer.writerows(history)
     log(f"Test: {accuracy:.2%}. Guardado en {run}")
     return {"checkpoint": checkpoint, "path": str(run / "biomas_cnn.pth")}
 

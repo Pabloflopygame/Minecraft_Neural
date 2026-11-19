@@ -11,6 +11,8 @@ from PIL import Image, ImageTk, ImageOps
 import torch
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from core import Config, train, predict, load_checkpoint, image_files, Cancelled
+from sweep import OPTIONS, error_rates
+from sweep_view import SweepView
 from plots import curves, confusion
 from weights_view import dense_weight_layers, draw_dense_connections
 from architectures import ORIGINAL, PRESETS, validate_architecture
@@ -57,6 +59,7 @@ class App(tk.Tk):
         self.arch_tab = self.tab("4 · Arquitecturas")
         self.net_tab = self.tab("5 · Red neuronal")
         self.build_data()
+        self.sweep = SweepView(self, self.tab("6 · Barrido"), OUTPUT)
         self.build_results()
         self.build_predict()
         self.refresh_selection()
@@ -141,14 +144,7 @@ class App(tk.Tk):
             ("selection_metric", "Elegir modelo por", "val_macro_f1"),
             ("scheduler_patience", "Paciencia LR", "2"),
         ]
-        options = {
-            "device": ("cuda", "cpu"),
-            "image_size": ("32", "64", "96", "128"),
-            "optimizer": ("Adam", "AdamW", "SGD"),
-            "scheduler": ("none", "plateau", "cosine"),
-            "class_weighting": ("none", "balanced"),
-            "selection_metric": ("val_loss", "val_macro_f1"),
-        }
+        options = {**OPTIONS, "image_size": ("32", "64", "96", "128")}
         for i, (key, label, value) in enumerate(fields):
             row = (i // 7) * 2
             col = i % 7
@@ -205,9 +201,14 @@ class App(tk.Tk):
         sub.add(self.curve_plot, text="Curvas")
         sub.add(self.cm_plot, text="Matriz de confusión")
         sub.add(report_tab, text="Métricas por bioma")
+        ttk.Label(
+            report_tab,
+            text="Falsos positivos: % de imágenes de otros biomas clasificadas como este. "
+            "Falsos negativos: % de imágenes de este bioma clasificadas como otro.",
+        ).pack(anchor="w")
         self.report = ttk.Treeview(
             report_tab,
-            columns=("name", "precision", "recall", "f1", "n"),
+            columns=("name", "precision", "recall", "f1", "n", "fpr", "fnr"),
             show="headings",
         )
         for key, title in [
@@ -216,6 +217,8 @@ class App(tk.Tk):
             ("recall", "Recall"),
             ("f1", "F1"),
             ("n", "Imágenes test"),
+            ("fpr", "Falsos positivos (%)"),
+            ("fnr", "Falsos negativos (%)"),
         ]:
             self.report.heading(key, text=title)
             self.report.column(key, width=150)
@@ -311,7 +314,10 @@ class App(tk.Tk):
             anchor="w", pady=8
         )
         self.net_text = ScrolledText(
-            self.net_tab, font=("Consolas", 11), wrap="none", state="disabled",
+            self.net_tab,
+            font=("Consolas", 11),
+            wrap="none",
+            state="disabled",
             height=11,
         )
         self.net_text.pack(fill="x")
@@ -322,7 +328,10 @@ class App(tk.Tk):
         )
         self.weight_layer = tk.StringVar()
         self.weight_selector = ttk.Combobox(
-            weight_bar, textvariable=self.weight_layer, state="disabled", width=36,
+            weight_bar,
+            textvariable=self.weight_layer,
+            state="disabled",
+            width=36,
         )
         self.weight_selector.pack(side="left")
         self.weight_selector.bind("<<ComboboxSelected>>", self.show_weights)
@@ -330,7 +339,9 @@ class App(tk.Tk):
             value="Entrena o carga un modelo para visualizar sus conexiones."
         )
         ttk.Label(
-            self.net_tab, textvariable=self.weight_info, wraplength=1050,
+            self.net_tab,
+            textvariable=self.weight_info,
+            wraplength=1050,
         ).pack(anchor="w", pady=(0, 4))
         self.weight_plot = ttk.Frame(self.net_tab)
         self.weight_plot.pack(fill="both", expand=True)
@@ -542,6 +553,8 @@ class App(tk.Tk):
                     self.show_model()
                     self.status.set("Modelo listo: " + value["path"])
                     self.tabs.select(self.results_tab)
+                elif kind == "swept":
+                    self.sweep.load(value)
                 elif kind == "prediction":
                     self.show_prediction(value)
                 elif kind == "cancelled":
@@ -691,32 +704,37 @@ class App(tk.Tk):
 
         self.launch(work, "folders")
 
+    def training_inputs(self, validate=True):
+        params = {
+            k: (
+                v.get()
+                if k
+                in (
+                    "device",
+                    "optimizer",
+                    "scheduler",
+                    "class_weighting",
+                    "selection_metric",
+                )
+                else float(v.get())
+                if k in ("lr", "weight_decay")
+                else int(v.get())
+            )
+            for k, v in self.values.items()
+        }
+        spec = json.loads(self.arch_editor.get("1.0", "end"))
+        cfg = Config(**params, architecture=spec)
+        entries = self.entries()
+        if not 5 <= len(entries) <= 10:
+            raise ValueError("Marca entre 5 y 10 biomas.")
+        if validate:
+            cfg.validate()
+            validate_architecture(spec, cfg.image_size, len(entries))
+        return entries, cfg
+
     def start_train(self):
         try:
-            params = {
-                k: (
-                    v.get()
-                    if k
-                    in (
-                        "device",
-                        "optimizer",
-                        "scheduler",
-                        "class_weighting",
-                        "selection_metric",
-                    )
-                    else float(v.get())
-                    if k in ("lr", "weight_decay")
-                    else int(v.get())
-                )
-                for k, v in self.values.items()
-            }
-            spec = json.loads(self.arch_editor.get("1.0", "end"))
-            validate_architecture(spec, params["image_size"], len(self.entries()))
-            cfg = Config(**params, architecture=spec)
-            cfg.validate()
-            entries = self.entries()
-            if not 5 <= len(entries) <= 10:
-                raise ValueError("Marca entre 5 y 10 biomas.")
+            entries, cfg = self.training_inputs()
         except Exception as exc:
             return messagebox.showerror("Configuración", str(exc))
         self.history = []
@@ -753,7 +771,7 @@ class App(tk.Tk):
             old.figure.clear()
         if metrics:
             self.summary.set(
-                f"Test: {metrics['accuracy']:.2%} · pérdida {metrics['loss']:.4f} · época elegida {metrics['selected_epoch']}\n"
+                f"Accuracy de test: {metrics['accuracy']:.2%} · pérdida {metrics['loss']:.4f} · época elegida {metrics['selected_epoch']}\n"
                 + " / ".join(f"{k}: {v}" for k, v in metrics["sizes"].items())
                 + (
                     "\nF1 macro: "
@@ -769,6 +787,7 @@ class App(tk.Tk):
                 + self.active["path"]
             )
             self.render(self.cm_plot, confusion(metrics))
+            rates = list(error_rates(metrics["confusion_matrix"]))
             for i, name in enumerate(cp["classes"]):
                 r = metrics["report"][f"class_{i}"]
                 self.report.insert(
@@ -780,6 +799,10 @@ class App(tk.Tk):
                         f"{r['recall']:.2%}",
                         f"{r['f1-score']:.2%}",
                         r["support"],
+                        *(
+                            f"{rates[i][k]:.2f} %" if rates[i][k] is not None else "—"
+                            for k in ("fpr_pct", "fnr_pct")
+                        ),
                     ),
                 )
         else:
