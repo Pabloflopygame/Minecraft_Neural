@@ -10,7 +10,10 @@ from tkinter.scrolledtext import ScrolledText
 from PIL import Image, ImageTk, ImageOps
 import torch
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from core import Config, train, predict, load_checkpoint, image_files, Cancelled
+from core import Config, train, predict, image_files, Cancelled
+from restore import load_workspace, restore_rows, save_copy
+from sweep import OPTIONS, error_rates
+from sweep_view import SweepView
 from plots import curves, confusion
 from weights_view import dense_weight_layers, draw_dense_connections
 from architectures import ORIGINAL, PRESETS, validate_architecture
@@ -57,6 +60,7 @@ class App(tk.Tk):
         self.arch_tab = self.tab("4 · Arquitecturas")
         self.net_tab = self.tab("5 · Red neuronal")
         self.build_data()
+        self.sweep = SweepView(self, self.tab("6 · Barrido"), OUTPUT)
         self.build_results()
         self.build_predict()
         self.refresh_selection()
@@ -125,6 +129,7 @@ class App(tk.Tk):
         )
         cfg.pack(fill="x", pady=10)
         self.values = {}
+        self.initial_values = {}
         fields = [
             ("epochs", "Épocas", "30"),
             ("batch_size", "Batch", "64"),
@@ -141,19 +146,13 @@ class App(tk.Tk):
             ("selection_metric", "Elegir modelo por", "val_macro_f1"),
             ("scheduler_patience", "Paciencia LR", "2"),
         ]
-        options = {
-            "device": ("cuda", "cpu"),
-            "image_size": ("32", "64", "96", "128"),
-            "optimizer": ("Adam", "AdamW", "SGD"),
-            "scheduler": ("none", "plateau", "cosine"),
-            "class_weighting": ("none", "balanced"),
-            "selection_metric": ("val_loss", "val_macro_f1"),
-        }
+        options = {**OPTIONS, "image_size": ("32", "64", "96", "128")}
         for i, (key, label, value) in enumerate(fields):
             row = (i // 7) * 2
             col = i % 7
             v = tk.StringVar(value=value)
             self.values[key] = v
+            self.initial_values[key] = value
             ttk.Label(cfg, text=label).grid(row=row, column=col, padx=4, sticky="w")
             if key in options:
                 w = ttk.Combobox(
@@ -174,6 +173,19 @@ class App(tk.Tk):
             cfg,
             text="Pesos balanced: compensa clases pequeñas. LR plateau: reduce al estancarse; cosine: descenso suave; none: constante.",
         ).grid(row=5, column=0, columnspan=7, sticky="w")
+        sourcebar = ttk.Frame(self.data_tab)
+        sourcebar.pack(fill="x")
+        self.button(sourcebar, "Cargar versión…", self.load_model)
+        self.button(sourcebar, "Vincular dataset…", self.link_dataset)
+        self.reuse = tk.BooleanVar(value=False)
+        self.source_label = tk.StringVar(value="Reutilizar pesos del modelo activo")
+        self.source_check = ttk.Checkbutton(
+            sourcebar,
+            textvariable=self.source_label,
+            variable=self.reuse,
+            state="disabled",
+        )
+        self.source_check.pack(side="left", padx=4)
         runbar = ttk.Frame(self.data_tab)
         runbar.pack(fill="x")
         self.train_button = self.button(runbar, "Train · Entrenar", self.start_train)
@@ -183,6 +195,8 @@ class App(tk.Tk):
         self.stop.pack(side="left", padx=5)
         self.progress = ttk.Progressbar(runbar, maximum=100)
         self.progress.pack(side="left", fill="x", expand=True, padx=10)
+        self.sweep_header = tk.StringVar()
+        ttk.Label(self.data_tab, textvariable=self.sweep_header).pack(anchor="w")
         self.log = ScrolledText(
             self.data_tab, height=7, font=("Consolas", 10), state="disabled"
         )
@@ -192,6 +206,7 @@ class App(tk.Tk):
         bar = ttk.Frame(self.results_tab)
         bar.pack(fill="x")
         self.button(bar, "Cargar modelo / resultados...", self.load_model)
+        self.button(bar, "Guardar copia como…", self.save_model_copy)
         self.button(bar, "Exportar gráficas...", self.export_plots)
         self.summary = tk.StringVar(value="Todavía no hay un entrenamiento cargado.")
         ttk.Label(self.results_tab, textvariable=self.summary, wraplength=1050).pack(
@@ -205,9 +220,14 @@ class App(tk.Tk):
         sub.add(self.curve_plot, text="Curvas")
         sub.add(self.cm_plot, text="Matriz de confusión")
         sub.add(report_tab, text="Métricas por bioma")
+        ttk.Label(
+            report_tab,
+            text="Falsos positivos: % de imágenes de otros biomas clasificadas como este. "
+            "Falsos negativos: % de imágenes de este bioma clasificadas como otro.",
+        ).pack(anchor="w")
         self.report = ttk.Treeview(
             report_tab,
-            columns=("name", "precision", "recall", "f1", "n"),
+            columns=("name", "precision", "recall", "f1", "n", "fpr", "fnr"),
             show="headings",
         )
         for key, title in [
@@ -216,6 +236,8 @@ class App(tk.Tk):
             ("recall", "Recall"),
             ("f1", "F1"),
             ("n", "Imágenes test"),
+            ("fpr", "Falsos positivos (%)"),
+            ("fnr", "Falsos negativos (%)"),
         ]:
             self.report.heading(key, text=title)
             self.report.column(key, width=150)
@@ -311,7 +333,10 @@ class App(tk.Tk):
             anchor="w", pady=8
         )
         self.net_text = ScrolledText(
-            self.net_tab, font=("Consolas", 11), wrap="none", state="disabled",
+            self.net_tab,
+            font=("Consolas", 11),
+            wrap="none",
+            state="disabled",
             height=11,
         )
         self.net_text.pack(fill="x")
@@ -322,7 +347,10 @@ class App(tk.Tk):
         )
         self.weight_layer = tk.StringVar()
         self.weight_selector = ttk.Combobox(
-            weight_bar, textvariable=self.weight_layer, state="disabled", width=36,
+            weight_bar,
+            textvariable=self.weight_layer,
+            state="disabled",
+            width=36,
         )
         self.weight_selector.pack(side="left")
         self.weight_selector.bind("<<ComboboxSelected>>", self.show_weights)
@@ -330,7 +358,9 @@ class App(tk.Tk):
             value="Entrena o carga un modelo para visualizar sus conexiones."
         )
         ttk.Label(
-            self.net_tab, textvariable=self.weight_info, wraplength=1050,
+            self.net_tab,
+            textvariable=self.weight_info,
+            wraplength=1050,
         ).pack(anchor="w", pady=(0, 4))
         self.weight_plot = ttk.Frame(self.net_tab)
         self.weight_plot.pack(fill="both", expand=True)
@@ -474,9 +504,14 @@ class App(tk.Tk):
         if self.busy:
             return
         self.busy = True
+        self.running_sweep = kind == "swept"
+        if kind in ("trained", "swept"):
+            self.sweep_header.set("")
+            self.progress["value"] = 0
         self.cancel.clear()
         for control, _ in self.controls:
             control.configure(state="disabled")
+        self.source_check.configure(state="disabled")
         self.stop.configure(state="normal")
         self.status.set("Trabajando...")
 
@@ -501,10 +536,17 @@ class App(tk.Tk):
                     for control, state in self.controls:
                         control.configure(state=state)
                     self.stop.configure(state="disabled")
+                    self.source_check.configure(
+                        state="normal" if self.active else "disabled"
+                    )
                     self.refresh_selection()
                 elif kind == "log":
                     self.append_log(value)
                     self.status.set(value)
+                elif kind == "sweep_progress":
+                    percent, headline = value
+                    self.progress["value"] = percent
+                    self.sweep_header.set(headline)
                 elif kind == "progress":
                     self.progress["value"] = value
                 elif kind == "epoch":
@@ -537,17 +579,47 @@ class App(tk.Tk):
                     self.status.set(
                         "Carpetas añadidas. Marca los biomas que quieras entrenar."
                     )
+                elif kind == "saved_copy":
+                    self.status.set("Copia guardada en " + value)
+                elif kind == "linked":
+                    self.replace_rows(value)
+                    self.status.set(
+                        "Carpetas vinculadas."
+                        if all(r["count"] for r in value)
+                        else "Faltan imágenes en las carpetas con recuento 0."
+                    )
                 elif kind in ("trained", "loaded"):
                     self.active = value
+                    notes = self.restore_training(value) if kind == "loaded" else []
+                    self.source_label.set(
+                        "Reutilizar pesos de "
+                        + Path(value["path"]).parent.name
+                        + "/"
+                        + Path(value["path"]).name
+                    )
                     self.show_model()
-                    self.status.set("Modelo listo: " + value["path"])
-                    self.tabs.select(self.results_tab)
+                    self.status.set(" ".join(notes) or "Modelo listo: " + value["path"])
+                    for note in notes:
+                        self.append_log(note)
+                    self.tabs.select(
+                        self.data_tab if kind == "loaded" else self.results_tab
+                    )
+                elif kind == "swept":
+                    self.sweep.load(value)
                 elif kind == "prediction":
                     self.show_prediction(value)
                 elif kind == "cancelled":
+                    if self.running_sweep:
+                        self.sweep_header.set(
+                            f"Barrido cancelado · {self.progress['value']:.1f} %"
+                        )
                     self.append_log(value)
                     self.status.set(value)
                 elif kind == "error":
+                    if self.running_sweep:
+                        self.sweep_header.set(
+                            f"Barrido interrumpido · {self.progress['value']:.1f} %"
+                        )
                     self.append_log("ERROR: " + value)
                     self.status.set(
                         "Operación fallida. El modelo activo anterior se conserva."
@@ -691,52 +763,146 @@ class App(tk.Tk):
 
         self.launch(work, "folders")
 
+    def training_inputs(self, validate=True):
+        params = {
+            k: (
+                v.get()
+                if k
+                in (
+                    "device",
+                    "optimizer",
+                    "scheduler",
+                    "class_weighting",
+                    "selection_metric",
+                )
+                else float(v.get())
+                if k in ("lr", "weight_decay")
+                else int(v.get())
+            )
+            for k, v in self.values.items()
+        }
+        spec = json.loads(self.arch_editor.get("1.0", "end"))
+        cfg = Config(**params, architecture=spec)
+        entries = self.entries()
+        if not 5 <= len(entries) <= 10:
+            raise ValueError("Marca entre 5 y 10 biomas.")
+        if any(not e["folder"] or not Path(e["folder"]).is_dir() for e in entries):
+            raise ValueError(
+                "Faltan carpetas de biomas. Vincula la raíz de tu dataset."
+            )
+        if validate:
+            cfg.validate()
+            validate_architecture(spec, cfg.image_size, len(entries))
+        return entries, cfg
+
     def start_train(self):
         try:
-            params = {
-                k: (
-                    v.get()
-                    if k
-                    in (
-                        "device",
-                        "optimizer",
-                        "scheduler",
-                        "class_weighting",
-                        "selection_metric",
-                    )
-                    else float(v.get())
-                    if k in ("lr", "weight_decay")
-                    else int(v.get())
-                )
-                for k, v in self.values.items()
-            }
-            spec = json.loads(self.arch_editor.get("1.0", "end"))
-            validate_architecture(spec, params["image_size"], len(self.entries()))
-            cfg = Config(**params, architecture=spec)
-            cfg.validate()
-            entries = self.entries()
-            if not 5 <= len(entries) <= 10:
-                raise ValueError("Marca entre 5 y 10 biomas.")
+            entries, cfg = self.training_inputs()
         except Exception as exc:
             return messagebox.showerror("Configuración", str(exc))
         self.history = []
         self.progress["value"] = 0
+        parent = self.training_parent()
         self.append_log(
-            "Nuevo entrenamiento desde cero. El test no se consulta hasta terminar."
+            "Entrenando una nueva copia desde los pesos activos."
+            if parent
+            else "Nuevo entrenamiento desde cero."
         )
         self.launch(
             lambda: train(
-                entries, cfg, OUTPUT, lambda k, v: self.events.put((k, v)), self.cancel
+                entries,
+                cfg,
+                OUTPUT,
+                lambda k, v: self.events.put((k, v)),
+                self.cancel,
+                parent=parent,
             ),
             "trained",
         )
+
+    def training_parent(self):
+        return self.active if self.reuse.get() else None
+
+    def replace_rows(self, rows):
+        self.tree.delete(*self.tree.get_children())
+        for row in rows:
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    "Sí" if row.get("use", True) else "No",
+                    row["name"],
+                    row["count"],
+                    row["folder"],
+                ),
+            )
+
+    def link_dataset(self):
+        entries = self.entries(all_rows=True)
+        if not entries:
+            return self.add_root()
+        root = filedialog.askdirectory(
+            title="Raíz que contiene las carpetas de estos biomas"
+        )
+        if root:
+
+            def work():
+                rows = restore_rows(
+                    [e["name"] for e in entries], entries, Path(root), prefer_root=True
+                )
+                for row, entry in zip(rows, entries):
+                    row["use"] = entry["use"]
+                return rows
+
+            self.launch(work, "linked")
+
+    def restore_training(self, workspace):
+        cp = workspace["checkpoint"]
+        config = {
+            **self.initial_values,
+            **workspace["config"],
+            "image_size": cp["image_size"],
+        }
+        notes = list(workspace["notes"])
+        if config["device"] == "cuda" and not torch.cuda.is_available():
+            config["device"] = "cpu"
+            notes.append(
+                "CUDA no está disponible en este equipo. Se ha seleccionado CPU."
+            )
+        for key, var in self.values.items():
+            var.set(str(config[key]))
+        self.arch_editor.configure(state="normal")
+        self.arch_editor.delete("1.0", "end")
+        self.arch_editor.insert(
+            "1.0",
+            json.dumps(
+                cp.get("architecture") or ORIGINAL, indent=2, ensure_ascii=False
+            ),
+        )
+        self.replace_rows(workspace["rows"])
+        self.reuse.set(True)
+        return notes
 
     def load_model(self):
         path = filedialog.askopenfilename(filetypes=[("Modelo PyTorch", "*.pth *.pt")])
         if path:
             self.launch(
-                lambda: {"checkpoint": load_checkpoint(path), "path": path}, "loaded"
+                lambda: load_workspace(path, BASE / "minecraft_biomas"), "loaded"
             )
+
+    def save_model_copy(self):
+        workspace = self.active
+        if not workspace:
+            return messagebox.showinfo(
+                "Guardar copia", "Entrena o carga un modelo primero."
+            )
+        destination = filedialog.asksaveasfilename(
+            title="Guardar la versión activa con un nombre nuevo",
+            defaultextension=".pth",
+            filetypes=[("Modelo PyTorch", "*.pth")],
+        )
+        if destination:
+            self.launch(lambda: save_copy(workspace, destination), "saved_copy")
 
     def show_model(self):
         cp = self.active["checkpoint"]
@@ -753,7 +919,7 @@ class App(tk.Tk):
             old.figure.clear()
         if metrics:
             self.summary.set(
-                f"Test: {metrics['accuracy']:.2%} · pérdida {metrics['loss']:.4f} · época elegida {metrics['selected_epoch']}\n"
+                f"Accuracy de test: {metrics['accuracy']:.2%} · pérdida {metrics['loss']:.4f} · época elegida {metrics['selected_epoch']}\n"
                 + " / ".join(f"{k}: {v}" for k, v in metrics["sizes"].items())
                 + (
                     "\nF1 macro: "
@@ -769,6 +935,7 @@ class App(tk.Tk):
                 + self.active["path"]
             )
             self.render(self.cm_plot, confusion(metrics))
+            rates = list(error_rates(metrics["confusion_matrix"]))
             for i, name in enumerate(cp["classes"]):
                 r = metrics["report"][f"class_{i}"]
                 self.report.insert(
@@ -780,6 +947,10 @@ class App(tk.Tk):
                         f"{r['recall']:.2%}",
                         f"{r['f1-score']:.2%}",
                         r["support"],
+                        *(
+                            f"{rates[i][k]:.2f} %" if rates[i][k] is not None else "—"
+                            for k in ("fpr_pct", "fnr_pct")
+                        ),
                     ),
                 )
         else:

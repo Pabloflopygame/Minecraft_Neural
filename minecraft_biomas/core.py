@@ -26,7 +26,7 @@ from sklearn.metrics import (
     recall_score,
 )
 
-from architectures import build_architecture
+from architectures import ORIGINAL, build_architecture
 
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -113,6 +113,33 @@ def make_model(size, classes, architecture=None):
         if architecture is None
         else build_architecture(architecture, size, classes)
     )
+
+
+def initialize_weights(model, cfg, names, parent):
+    cp = parent["checkpoint"]
+    if names != list(cp["classes"]):
+        raise ValueError(
+            "Para reutilizar los pesos, conserva los biomas y su orden de salida."
+        )
+    state = cp["state_dict"]
+    # ConvNet anterior tiene nombres de capas; el editor representa la misma CNN por índices.
+    if cp.get("architecture") is None and cfg.architecture is not None:
+        if cfg.architecture["layers"] != ORIGINAL["layers"]:
+            raise ValueError(
+                "Los pesos del formato antiguo requieren la arquitectura original."
+            )
+        indices = {"conv1": "0", "conv2": "3", "fc1": "7", "fc2": "9"}
+        state = {
+            indices[name.split(".")[0]] + "." + name.split(".")[1]: tensor
+            for name, tensor in state.items()
+        }
+    try:
+        model.load_state_dict(state, strict=True)
+    except RuntimeError as exc:
+        raise ValueError(
+            "Pesos incompatibles con las capas o dimensiones elegidas. "
+            "Restaura la arquitectura o desactiva la reutilización de pesos."
+        ) from exc
 
 
 def preprocessing(size):
@@ -311,11 +338,22 @@ def evaluate(model, loader, device, cancel):
     )
 
 
-def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None):
+def train(
+    entries,
+    cfg,
+    output_root,
+    emit=lambda kind, value: None,
+    cancel=None,
+    *,
+    collected=None,
+    parent=None,
+):
     cancel = cancel or threading.Event()
     cfg.validate()
     log = lambda s: emit("log", s)
-    names, samples = collect(entries, cancel, log)
+    names, samples = (
+        collected if collected is not None else collect(entries, cancel, log)
+    )
     available = Counter(s[1] for s in samples)
     samples = cap_samples(samples, cfg.max_images_per_class, cfg.seed)
     selected = Counter(s[1] for s in samples)
@@ -343,6 +381,9 @@ def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None)
         if v
     }
     model = make_model(cfg.image_size, len(names), cfg.architecture).to(cfg.device)
+    if parent is not None:
+        initialize_weights(model, cfg, names, parent)
+        log(f"Pesos iniciales: {parent['path']}. Se inicia un nuevo optimizador.")
     optimizer = make_optimizer(model, cfg)
     scheduler = make_scheduler(optimizer, cfg)
     weights = training_weights(samples, parts["train"], len(names), cfg.class_weighting)
@@ -461,6 +502,8 @@ def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None)
         "classes": names,
         "image_size": cfg.image_size,
         "config": asdict(cfg),
+        "entries": entries,
+        "parent_checkpoint": str(parent["path"]) if parent else None,
         "history": history,
         "metrics": metrics,
         "data_summary": data_summary,
@@ -474,6 +517,7 @@ def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None)
             {
                 "config": asdict(cfg),
                 "entries": entries,
+                "parent_checkpoint": checkpoint["parent_checkpoint"],
                 "history": history,
                 "metrics": metrics,
                 "data_summary": data_summary,
@@ -491,6 +535,17 @@ def train(entries, cfg, output_root, emit=lambda kind, value: None, cancel=None)
             for i in indices:
                 path, label, digest = samples[i]
                 writer.writerow([path, names[label], digest, kind])
+    with (run / "predicciones_test.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["ruta", "real", "predicho", "correcto"])
+        for index, actual, guess in zip(parts["test"], truth, predicted):
+            writer.writerow(
+                [samples[index][0], names[actual], names[guess], int(actual == guess)]
+            )
+    with (run / "epocas.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(history[0]))
+        writer.writeheader()
+        writer.writerows(history)
     log(f"Test: {accuracy:.2%}. Guardado en {run}")
     return {"checkpoint": checkpoint, "path": str(run / "biomas_cnn.pth")}
 
