@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from itertools import product
 from pathlib import Path
 from uuid import uuid4
+from time import monotonic
 
 OPTIONS = {
     "device": ("cuda", "cpu"),
@@ -99,6 +100,12 @@ def append_rows(path, rows):
         writer.writerows(rows)
 
 
+def duration(seconds):
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
 def run_sweep(entries, base, axes, output, emit, cancel, *, parent=None):
     from core import check_cancel, collect, train
     from architectures import validate_architecture
@@ -108,19 +115,52 @@ def run_sweep(entries, base, axes, output, emit, cancel, *, parent=None):
     summary = folder / "resumen.csv"
     keys = list(axes)
     total = len(axes[keys[0]]) * len(axes[keys[1]])
+    started = monotonic()
+    emit("sweep_progress", (0, f"Preparando datos · 0/{total} combinaciones · 0 %"))
     emit("log", f"Barrido de {total} redes: {folder}")
     collected = collect(entries, cancel, lambda msg: emit("log", msg))
+    training_started = monotonic()
     for number, pair in enumerate(product(*axes.values()), 1):
         check_cancel(cancel)
         settings = dict(zip(keys, pair))
         cfg = configuration(base, settings)
         label = f"Red {number}/{total} · {settings}"
+        run_started = monotonic()
+        last_update = None
+
+        def report(kind, value):
+            nonlocal last_update
+            if kind != "progress":
+                emit(kind, value)
+                return
+            now = monotonic()
+            if last_update is not None and now - last_update < 0.25 and value < 100:
+                return
+            last_update = now
+            # El último tramo incluye la evaluación y escritura de los resultados.
+            finished = number - 1 + min(value / 100, 0.999)
+            percent = min(99.9, int(1000 * finished / total) / 10)
+            remaining = "calculando…"
+            if finished:
+                remaining = duration(
+                    (now - training_started) * (total - finished) / finished
+                )
+            emit(
+                "sweep_progress",
+                (
+                    percent,
+                    f"Combinación {number}/{total} · {percent:.1f} % del barrido · "
+                    f"Transcurrido {duration(now - started)} · Restante estimado {remaining}",
+                ),
+            )
+
+        report("progress", 0)
         emit("log", label)
         try:
             cfg.validate()
             validate_architecture(cfg.architecture, cfg.image_size, len(entries))
             result = train(
-                entries, cfg, folder, emit, cancel, collected=collected, parent=parent
+                entries, cfg, folder, report, cancel, collected=collected, parent=parent
             )
         except ValueError as exc:
             raise ValueError(
@@ -158,5 +198,16 @@ def run_sweep(entries, base, axes, output, emit, cancel, *, parent=None):
         for metric in ("fpr_pct", "fnr_pct"):
             row["macro_" + metric] = sum(r[metric] for r in rates) / len(rates)
         append_rows(summary, [row])
+        elapsed = monotonic() - run_started
+        emit("log", f"{label} completada en {duration(elapsed)} ({elapsed:.1f} s).")
         del result, cp
+    elapsed = duration(monotonic() - started)
+    emit(
+        "sweep_progress",
+        (
+            100,
+            f"Barrido completado · {total}/{total} combinaciones · 100 % · Total {elapsed}",
+        ),
+    )
+    emit("log", f"Tiempo total del barrido: {elapsed}.")
     return str(summary)

@@ -45,15 +45,25 @@ class SweepTests(TestCase):
                 architecture=COMPACT,
                 validation_percent=16,
             )
+            events = []
             path = Path(
                 run_sweep(
                     entries,
                     cfg,
                     {"optimizer": ("Adam", "SGD"), "layers.16.p": (0.1, 0.2)},
                     root,
-                    lambda *args: None,
+                    lambda kind, value: events.append((kind, value)),
                     threading.Event(),
                 )
+            )
+            progress = [v[0] for k, v in events if k == "sweep_progress"]
+            self.assertEqual(progress, sorted(progress))
+            self.assertEqual(progress[0], 0)
+            self.assertEqual(progress[-1], 100)
+            self.assertLess(progress[-2], 100)
+            self.assertTrue({25, 50, 75} <= set(progress))
+            self.assertEqual(
+                sum(k == "log" and "completada en" in v for k, v in events), 4
             )
             rows = read_csv(path)
             self.assertEqual(

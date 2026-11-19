@@ -195,6 +195,8 @@ class App(tk.Tk):
         self.stop.pack(side="left", padx=5)
         self.progress = ttk.Progressbar(runbar, maximum=100)
         self.progress.pack(side="left", fill="x", expand=True, padx=10)
+        self.sweep_header = tk.StringVar()
+        ttk.Label(self.data_tab, textvariable=self.sweep_header).pack(anchor="w")
         self.log = ScrolledText(
             self.data_tab, height=7, font=("Consolas", 10), state="disabled"
         )
@@ -502,6 +504,10 @@ class App(tk.Tk):
         if self.busy:
             return
         self.busy = True
+        self.running_sweep = kind == "swept"
+        if kind in ("trained", "swept"):
+            self.sweep_header.set("")
+            self.progress["value"] = 0
         self.cancel.clear()
         for control, _ in self.controls:
             control.configure(state="disabled")
@@ -537,6 +543,10 @@ class App(tk.Tk):
                 elif kind == "log":
                     self.append_log(value)
                     self.status.set(value)
+                elif kind == "sweep_progress":
+                    percent, headline = value
+                    self.progress["value"] = percent
+                    self.sweep_header.set(headline)
                 elif kind == "progress":
                     self.progress["value"] = value
                 elif kind == "epoch":
@@ -599,9 +609,17 @@ class App(tk.Tk):
                 elif kind == "prediction":
                     self.show_prediction(value)
                 elif kind == "cancelled":
+                    if self.running_sweep:
+                        self.sweep_header.set(
+                            f"Barrido cancelado · {self.progress['value']:.1f} %"
+                        )
                     self.append_log(value)
                     self.status.set(value)
                 elif kind == "error":
+                    if self.running_sweep:
+                        self.sweep_header.set(
+                            f"Barrido interrumpido · {self.progress['value']:.1f} %"
+                        )
                     self.append_log("ERROR: " + value)
                     self.status.set(
                         "Operación fallida. El modelo activo anterior se conserva."
